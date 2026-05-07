@@ -1,59 +1,106 @@
-const fs = require('fs');
-const path = require('path');
+// =============================================================================
+// SERVIDOR DO ADDON — v1.1.0 (com logs detalhados)
+// =============================================================================
+
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 
-const DATA_FILE = path.join(__dirname, 'data', 'lists.generated.json');
-const SEED_FILE = path.join(__dirname, 'data', 'lists.seed.json');
+const lists = require('./lib/lists');
+const { fetchListItems } = require('./lib/imdb-scraper');
+const cache = require('./lib/cache');
 
-function loadData() {
-  const file = fs.existsSync(DATA_FILE) ? DATA_FILE : SEED_FILE;
-  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-  return data.lists.map((list) => ({ ...list, items: Array.isArray(list.items) ? list.items : [] }));
-}
-
-const lists = loadData();
+// IMPORTANTE: enquanto debugamos, mantemos cache curto pra invalidar rápido
+const CACHE_TTL_MS = 30 * 60 * 1000;        // 30 minutos
+const CATALOG_PAGE_SIZE = 100;
 
 const manifest = {
-  id: 'org.rafa.imdb.staticlists',
-  version: '1.0.0',
-  name: 'Rafa — Listas IMDb',
-  description: 'Catálogos estáticos gerados a partir de listas públicas do IMDb.',
-  logo: 'https://www.imdb.com/favicon.ico',
+  // Bumpado de 1.0.0 -> 1.1.0 pra Stremio invalidar resposta antiga em cache
+  id: 'com.usuario.imdb-listas-curadas',
+  version: '1.1.0',
+  name: 'Listas IMDb Curadas',
+  description:
+    'Catálogos de cinema curados a partir de listas públicas do IMDb.',
+  logo: 'https://m.media-amazon.com/images/G/01/imdb/images/social/imdb_logo.png',
+
   resources: ['catalog'],
-  types: ['movie'],
+  types: ['movie', 'series'],
   idPrefixes: ['tt'],
+
   catalogs: lists.map((list) => ({
-    type: 'movie',
+    type: list.type || 'movie',
     id: list.id,
     name: list.name,
-    extraSupported: ['skip'],
-    extraRequired: []
-  }))
+    extra: [
+      { name: 'skip', isRequired: false },
+    ],
+  })),
+
+  behaviorHints: {
+    configurable: false,
+    configurationRequired: false,
+  },
 };
 
 const builder = new addonBuilder(manifest);
 
-builder.defineCatalogHandler(({ type, id, extra }) => {
-  if (type !== 'movie') return Promise.resolve({ metas: [] });
-  const list = lists.find((entry) => entry.id === id);
-  if (!list) return Promise.resolve({ metas: [] });
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
+  console.log(`[catalog] PEDIDO recebido: type=${type} id=${id} skip=${extra?.skip || 0}`);
 
-  const skip = Number(extra && extra.skip ? extra.skip : 0);
-  const limit = 100;
-  const items = list.items.slice(skip, skip + limit);
+  const list = lists.find((l) => l.id === id);
+  if (!list) {
+    console.warn(`[catalog] lista desconhecida: ${id}`);
+    return { metas: [] };
+  }
 
-  const metas = items.map((item) => ({
-    id: item.id,
-    type: 'movie',
-    name: item.name || item.id,
-    poster: item.poster || `https://images.metahub.space/poster/medium/${item.id}/img`,
+  const expectedType = list.type || 'movie';
+  if (type !== expectedType) {
+    console.log(`[catalog] tipo errado: esperado ${expectedType}, recebido ${type}`);
+    return { metas: [] };
+  }
+
+  let items;
+  try {
+    items = await cache.getOrFetch(
+      `imdb-list:${list.listId}`,
+      () => fetchListItems(list.listId),
+      CACHE_TTL_MS
+    );
+    console.log(`[catalog] ${list.id} cache retornou ${items.length} itens`);
+  } catch (err) {
+    console.error(`[catalog] ERRO em ${list.id} (${list.listId}):`, err.message);
+    return { metas: [] };
+  }
+
+  const filtered = items.filter((it) => it.type === expectedType);
+  console.log(`[catalog] ${list.id} após filtro de tipo: ${filtered.length}`);
+
+  const skip = parseInt(extra?.skip || '0', 10) || 0;
+  const page = filtered.slice(skip, skip + CATALOG_PAGE_SIZE);
+
+  const metas = page.map((it) => ({
+    id: it.imdbId,
+    type: it.type,
+    name: it.title,
+    poster: it.poster || undefined,
     posterShape: 'poster',
-    releaseInfo: item.year ? String(item.year) : undefined
+    releaseInfo: it.year ? String(it.year) : undefined,
   }));
 
-  return Promise.resolve({ metas });
+  console.log(`[catalog] ${list.id} retornando ${metas.length} metas pro Stremio`);
+
+  // Cache curto durante debug (15 min). Depois pode voltar pra 6h.
+  return {
+    metas,
+    cacheMaxAge: 15 * 60,
+    staleRevalidate: 30 * 60,
+    staleError: 24 * 60 * 60,
+  };
 });
 
-const port = process.env.PORT || 7000;
-serveHTTP(builder.getInterface(), { port });
-console.log(`Addon rodando em http://127.0.0.1:${port}/manifest.json`);
+const PORT = process.env.PORT || 7000;
+serveHTTP(builder.getInterface(), { port: PORT });
+
+console.log('================================================================');
+console.log(`Listas IMDb Curadas v${manifest.version}`);
+console.log(`Rodando em http://127.0.0.1:${PORT}/manifest.json`);
+console.log(`${manifest.catalogs.length} catálogos configurados`);
+console.log('================================================================');
