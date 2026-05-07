@@ -1,0 +1,16 @@
+{
+  "name": "rafa-imdb-stremio-addon",
+  "version": "1.0.0",
+  "description": "Addon estático do Stremio para listas públicas do IMDb.",
+  "main": "server.js",
+  "scripts": {
+    "build": "node scripts/build-from-imdb.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
