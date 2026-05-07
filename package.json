@@ -1,0 +1,17 @@
+{
+  "name": "imdb-stremio-listas",
+  "version": "1.0.0",
+  "description": "Addon do Stremio que expõe listas públicas do IMDb como catálogos com nomes e ordem personalizados",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10"
+  },
+  "license": "MIT"
+}
